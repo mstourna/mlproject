@@ -1,0 +1,49 @@
+import pandas as pd
+import numpy as np
+import os
+import sys      
+import pickle
+from src.exception import CustomException
+from src.logger import logging
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import r2_score
+
+
+def save_object(file_path, obj):
+    try:
+        dir_path = os.path.dirname(file_path)
+        os.makedirs(dir_path, exist_ok=True)
+
+        with open(file_path, 'wb') as file_obj:
+            pickle.dump(obj, file_obj)
+        logging.info(f"Object saved to {file_path}")
+    except Exception as e:
+        logging.error("Error occurred while saving object")
+        raise CustomException(e, sys)
+    
+def evaluate_model(X_train, y_train, X_test, y_test, models, params):
+    try:
+        report = {}
+        for model_name, model in models.items():
+            logging.info(f"Evaluating model: {model_name}")
+            param = params.get(model_name, {})
+            gs = GridSearchCV(model, param, cv=3, n_jobs=-1, verbose=2)
+            gs.fit(X_train, y_train)
+
+            model.set_params(**gs.best_params_)
+            model.fit(X_train, y_train)
+
+            y_train_pred = model.predict(X_train)
+            y_test_pred = model.predict(X_test)
+
+            train_r2 = r2_score(y_train, y_train_pred)
+            test_r2 = r2_score(y_test, y_test_pred)
+
+            report[model_name] = test_r2
+            logging.info(f"{model_name} - Train R2: {train_r2}, Test R2: {test_r2}")
+
+        return report
+    except Exception as e:
+        logging.error("Error occurred during model evaluation")
+        raise CustomException(e, sys)
+    
