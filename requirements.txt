@@ -1,0 +1,11 @@
+scikit-learn
+pandas
+matplotlib
+seaborn
+numpy
+flask
+streamlit
+xgboost
+lightgbm
+scipy
+-e .
