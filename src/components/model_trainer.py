@@ -18,6 +18,7 @@ from src.logger import logging
 from src.utils import save_object, evaluate_model
 from src.components.data_transformation import DataTransformation
 from src.components.data_ingestion import DataIngestion
+from src.model_selector import get_all_models, get_model_params
 
 @dataclass
 class ModelTrainerConfig:
@@ -28,101 +29,70 @@ class ModelTrainerConfig:
     expected_r2_score: float = 0.6
     overfitting_threshold: float = 0.1
     random_state: int = 42
-    models: dict = field(default_factory=dict)
-    params: dict = field(default_factory=dict)
 
-    def __post_init__(self):
-        self.models = {
-            "Linear Regression": LinearRegression(),
-            "Ridge Regression": Ridge(),
-            "Lasso Regression": Lasso(),
-            "Decision Tree": DecisionTreeRegressor(random_state=self.random_state),
-            "Random Forest": RandomForestRegressor(random_state=self.random_state),
-            "K-Nearest Neighbors": KNeighborsRegressor(),
-            "Support Vector Machine": SVR(),
-            "Gradient Boosting": GradientBoostingRegressor(random_state=self.random_state),
-            "AdaBoost": AdaBoostRegressor(random_state=self.random_state),
-            "XGBoost": XGBRegressor(random_state=self.random_state),
-            "LightGBM": LGBMRegressor(random_state=self.random_state)
-        }
-
-        self.params = {
-            "Linear Regression": {},
-            "Ridge Regression": {'alpha': [0.1, 1.0, 10.0]},
-            "Lasso Regression": {'alpha': [0.01, 0.1, 1.0]},
-            "Decision Tree": {'max_depth': [None, 10, 20, 30], 'min_samples_split': [2, 5, 10]},
-            "Random Forest": {'n_estimators': [50, 100, 200], 'max_depth': [None, 10, 20], 'min_samples_split': [2, 5]},
-            "K-Nearest Neighbors": {'n_neighbors': [3, 5, 7], 'weights': ['uniform', 'distance']},
-            "Support Vector Machine": {'C': [0.1, 1.0, 10.0], 'kernel': ['linear', 'rbf']},
-            "Gradient Boosting": {'n_estimators': [100, 200], 'learning_rate': [0.01, 0.1], 'max_depth': [3, 5]},
-            "AdaBoost": {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]},
-            "XGBoost": {'n_estimators': [100, 200], 'learning_rate': [0.01, 0.1], 'max_depth': [3, 5]},
-            "LightGBM": {'n_estimators': [100, 200], 'learning_rate': [0.01, 0.1], 'num_leaves': [31, 50]}
-        }
 
 class ModelTrainer:
     def __init__(self, model_trainer_config: ModelTrainerConfig = ModelTrainerConfig()):
-        self.model_trainer_config = model_trainer_config
+        self.config = model_trainer_config
+        self.models = get_all_models(random_state=self.config.random_state)
+        self.params = get_model_params()
+
+    def load_data(self):
+        train_df = pd.read_csv(self.config.train_data_path)
+        test_df = pd.read_csv(self.config.test_data_path)
+        X_train = train_df.drop(columns=['math_score'], axis=1)
+        y_train = train_df['math_score']
+        X_test = test_df.drop(columns=['math_score'], axis=1)
+        y_test = test_df['math_score']
+        return X_train, y_train, X_test, y_test
+
+    def load_preprocessor(self):
+        with open(self.config.preprocessor_path, 'rb') as f:
+            return pickle.load(f)
+
+    def get_transformed_data(self, preprocessor, X_train, X_test):
+        return preprocessor.transform(X_train), preprocessor.transform(X_test)
+
+    def train_and_evaluate(self, X_train, y_train, X_test, y_test):
+        return evaluate_model(X_train, y_train, X_test, y_test, self.models, self.params)
+
+    def save_best_model(self, model):
+        save_object(file_path=self.config.trained_model_file_path, obj=model)
 
     def initiate_model_trainer(self):
-        logging.info("Entered the model trainer component")
+        logging.info("Starting model training pipeline")
         try:
-            train_df = pd.read_csv(self.model_trainer_config.train_data_path)
-            test_df = pd.read_csv(self.model_trainer_config.test_data_path)
-            logging.info("Loaded training and testing data")
+            X_train, y_train, X_test, y_test = self.load_data()
+            preprocessor = self.load_preprocessor()
+            X_train_transformed, X_test_transformed = self.get_transformed_data(preprocessor, X_train, X_test)
 
-            X_train = train_df.drop(columns=['math_score'], axis=1)
-            y_train = train_df['math_score']
-            X_test = test_df.drop(columns=['math_score'], axis=1)
-            y_test = test_df['math_score']
-
-            logging.info("Split data into features and target")
-
-            with open(self.model_trainer_config.preprocessor_path, 'rb') as f:
-                preprocessor = pickle.load(f)
-            logging.info("Loaded preprocessor object")
-
-            X_train_transformed = preprocessor.transform(X_train)
-            X_test_transformed = preprocessor.transform(X_test)
-            logging.info("Transformed training and testing data")
-
-            model_report = evaluate_model(
-                X_train_transformed, y_train,
-                X_test_transformed, y_test,
-                self.model_trainer_config.models,
-                self.model_trainer_config.params
-            )
-            logging.info(f"Model evaluation report: {model_report}")
-
+            model_report = self.train_and_evaluate(X_train_transformed, y_train, X_test_transformed, y_test)
             best_model_name = max(model_report, key=model_report.get)
             best_model_score = model_report[best_model_name]
-            best_model = self.model_trainer_config.models[best_model_name]
-            logging.info(f"Best model: {best_model_name} with R2 score: {best_model_score}")
+            best_model = self.models[best_model_name]
 
-            if best_model_score < self.model_trainer_config.expected_r2_score:
-                raise CustomException(f"No model found with R2 score above {self.model_trainer_config.expected_r2_score}", sys)
+            logging.info(f"Best model: {best_model_name} with score: {best_model_score}")
 
+            if best_model_score < self.config.expected_r2_score:
+                raise CustomException(f"No suitable model found with R2 above {self.config.expected_r2_score}", sys)
+
+            # Overfitting/underfitting check
             train_pred = best_model.predict(X_train_transformed)
             test_pred = best_model.predict(X_test_transformed)
             train_r2 = r2_score(y_train, train_pred)
             test_r2 = r2_score(y_test, test_pred)
 
-            logging.info(f"Train R2 score: {train_r2}, Test R2 score: {test_r2}")
+            if abs(train_r2 - test_r2) > self.config.overfitting_threshold:
+                raise CustomException("Model may be overfitting or underfitting", sys)
 
-            if abs(train_r2 - test_r2) > self.model_trainer_config.overfitting_threshold:
-                raise CustomException("Model is overfitting or underfitting", sys)
-
-            save_object(
-                file_path=self.model_trainer_config.trained_model_file_path,
-                obj=best_model
-            )
-            logging.info(f"Saved best model at {self.model_trainer_config.trained_model_file_path}")
-
+            self.save_best_model(best_model)
+            logging.info("Model training and saving complete.")
             return best_model_score
 
         except Exception as e:
-            logging.error("Error occurred in model trainer")
+            logging.error("Error in model training pipeline")
             raise CustomException(e, sys)
+
 
 # Test the trainer
 if __name__ == "__main__":
