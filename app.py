@@ -12,7 +12,8 @@ def index():
 @app.route('/predictions', methods=['GET', 'POST'])
 def predict_data():
     if request.method == 'GET':
-        return render_template('home.html', prediction_text=f'Predicted Math Score: {np.round(prediction, 2)}')
+        # No prediction available yet on GET
+        return render_template('home.html')  # No prediction_text passed
 
     else:
         try:
@@ -45,6 +46,7 @@ def predict_data():
 
         except Exception as e:
             return f"Error: {e}"
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
